@@ -23,6 +23,10 @@
 
 /* sys I/F for thermal zone */
 
+#ifdef OPLUS_BUG_STABILITY
+#include <linux/vmalloc.h>
+#endif /* OPLUS_BUG_STABILITY */
+
 static ssize_t
 type_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
@@ -37,7 +41,11 @@ temp_show(struct device *dev, struct device_attribute *attr, char *buf)
 	struct thermal_zone_device *tz = to_thermal_zone(dev);
 	int temperature, ret;
 
+#ifdef OPLUS_BUG_STABILITY
+	ret = thermal_zone_get_temp_workaround(tz, &temperature);
+#else
 	ret = thermal_zone_get_temp(tz, &temperature);
+#endif
 
 	if (ret)
 		return ret;
@@ -1050,13 +1058,12 @@ static const struct attribute_group cooling_device_stats_attr_group = {
 
 static void cooling_device_stats_setup(struct thermal_cooling_device *cdev)
 {
-	const struct attribute_group *stats_attr_group = NULL;
 	struct cooling_dev_stats *stats;
 	unsigned long states;
 	int var;
 
 	if (cdev->ops->get_max_state(cdev, &states))
-		goto out;
+		return;
 
 	states++; /* Total number of states is highest state + 1 */
 
@@ -1065,8 +1072,14 @@ static void cooling_device_stats_setup(struct thermal_cooling_device *cdev)
 	var += sizeof(*stats->trans_table) * states * states;
 
 	stats = kzalloc(var, GFP_KERNEL);
+#ifdef OPLUS_BUG_STABILITY
+	if (!stats) {
+		dev_err(&cdev->device, "need buffer size=%d, try to the vzalloc() func!\n", var);
+		stats = vzalloc(var);
+	}
+#endif
 	if (!stats)
-		goto out;
+		return;
 
 	stats->time_in_state = (ktime_t *)(stats + 1);
 	stats->trans_table = (unsigned int *)(stats->time_in_state + states);
@@ -1076,12 +1089,9 @@ static void cooling_device_stats_setup(struct thermal_cooling_device *cdev)
 
 	spin_lock_init(&stats->lock);
 
-	stats_attr_group = &cooling_device_stats_attr_group;
-
-out:
 	/* Fill the empty slot left in cooling_device_attr_groups */
 	var = ARRAY_SIZE(cooling_device_attr_groups) - 2;
-	cooling_device_attr_groups[var] = stats_attr_group;
+	cooling_device_attr_groups[var] = &cooling_device_stats_attr_group;
 }
 
 static void cooling_device_stats_destroy(struct thermal_cooling_device *cdev)
