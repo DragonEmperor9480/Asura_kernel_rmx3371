@@ -4786,7 +4786,8 @@ static int sde_crtc_onscreenfinger_atomic_check(struct sde_crtc_state *cstate,
 	cstate->fingerprint_pressed = false;
 
 	/* initalize dim layer */
-	if (dimlayer_hbm || dimlayer_bl) {
+	panel_power_mode = oplus_get_panel_power_mode();
+	if ((dimlayer_hbm || dimlayer_bl) && (panel_power_mode != SDE_MODE_DPMS_LP1) && (panel_power_mode != SDE_MODE_DPMS_LP2)) {
 		if (fp_index >= 0 && fppressed_index >= 0) {
 			if (pstates[fp_index].stage >= pstates[fppressed_index].stage) {
 				SDE_ERROR("Bug!!: fp layer top of fppressed layer\n");
