@@ -136,6 +136,11 @@ all.config
 # fetched Android config fragments
 kernel/configs/android-*.cfg
 
+# Local builds
+build1.sh
+out
+*.zip
+build.log
 #
 #Ignoring Android.bp link file
 #
