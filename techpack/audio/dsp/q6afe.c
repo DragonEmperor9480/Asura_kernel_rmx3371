@@ -2108,7 +2108,7 @@ static int q6afe_get_params(u16 port_id, struct mem_mapping_hdr *mem_hdr,
 #ifdef OPLUS_FEATURE_TFA98XX_VI_FEEDBACK
 int get_smartpa_id(void);
 #endif /*OPLUS_FEATURE_TFA98XX_VI_FEEDBACK*/
-int set_smartpa_pm_status_apr(void *buf, int cmd_size)
+static int set_smartpa_pm_status_apr(void *buf, int cmd_size)
 {
 	int ret;
 	int port = 0;
@@ -2183,8 +2183,9 @@ done:
 	}
 	return ret;
 }
+EXPORT_SYMBOL(set_smartpa_pm_status_apr);
 
-int get_smartpa_pm_result_apr(void *buf, int cmd_size)
+static int get_smartpa_pm_result_apr(void *buf, int cmd_size)
 {
 	int ret = 0;
 	int port = 0;
@@ -2240,6 +2241,7 @@ int get_smartpa_pm_result_apr(void *buf, int cmd_size)
 done:
 	return ret;
 }
+EXPORT_SYMBOL(get_smartpa_pm_result_apr);
 #endif /* OPLUS_FEATURE_SMARTPA_PM */
 
 /*
