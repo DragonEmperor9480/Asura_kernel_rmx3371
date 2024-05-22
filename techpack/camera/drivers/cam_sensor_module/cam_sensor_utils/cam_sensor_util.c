@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2017-2020, The Linux Foundation. All rights reserved.
- * Copyright (c) 2022-2024 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2017-2019, The Linux Foundation. All rights reserved.
  */
 
 #include <linux/kernel.h>
@@ -242,12 +241,6 @@ static int32_t cam_sensor_get_io_buffer(
 	size_t buf_size = 0;
 	int32_t rc = 0;
 
-	if (io_cfg == NULL || i2c_settings == NULL) {
-		CAM_ERR(CAM_SENSOR,
-			"Invalid args, io buf or i2c settings is NULL");
-		return -EINVAL;
-	}
-
 	if (io_cfg->direction == CAM_BUF_OUTPUT) {
 		rc = cam_mem_get_cpu_buf(io_cfg->mem_handle[0],
 			&buf_addr, &buf_size);
@@ -264,7 +257,6 @@ static int32_t cam_sensor_get_io_buffer(
 			CAM_ERR(CAM_SENSOR,
 				"invalid size:io_cfg->offsets[0]: %d, buf_size: %d",
 				io_cfg->offsets[0], buf_size);
-			cam_mem_put_cpu_buf(io_cfg->mem_handle[0]);
 			return -EINVAL;
 		}
 		i2c_settings->read_buff =
@@ -276,7 +268,6 @@ static int32_t cam_sensor_get_io_buffer(
 			io_cfg->direction);
 		rc = -EINVAL;
 	}
-	cam_mem_put_cpu_buf(io_cfg->mem_handle[0]);
 	return rc;
 }
 
@@ -371,23 +362,36 @@ static int32_t cam_sensor_handle_continuous_read(
 }
 
 static int cam_sensor_handle_slave_info(
-	uint32_t *cmd_buf,
-	struct i2c_settings_array *i2c_reg_settings,
-	struct list_head **list_ptr)
+	struct camera_io_master *io_master,
+	uint32_t *cmd_buf)
 {
 	int rc = 0;
 	struct cam_cmd_i2c_info *i2c_info = (struct cam_cmd_i2c_info *)cmd_buf;
-	struct i2c_settings_list  *i2c_list;
 
-	i2c_list =
-		cam_sensor_get_i2c_ptr(i2c_reg_settings, 1);
-	if (!i2c_list || !i2c_list->i2c_settings.reg_setting) {
-		CAM_ERR(CAM_SENSOR, "Failed in allocating mem for list");
-		return -ENOMEM;
+	if (io_master == NULL || cmd_buf == NULL) {
+		CAM_ERR(CAM_SENSOR, "Invalid args");
+		return -EINVAL;
 	}
 
-	i2c_list->op_code = CAM_SENSOR_I2C_SET_I2C_INFO;
-	i2c_list->slave_info = *i2c_info;
+	switch (io_master->master_type) {
+	case CCI_MASTER:
+		io_master->cci_client->sid = (i2c_info->slave_addr >> 1);
+		io_master->cci_client->i2c_freq_mode = i2c_info->i2c_freq_mode;
+		break;
+
+	case I2C_MASTER:
+		io_master->client->addr = i2c_info->slave_addr;
+		break;
+
+	case SPI_MASTER:
+		break;
+
+	default:
+		CAM_ERR(CAM_SENSOR, "Invalid master type: %d",
+			io_master->master_type);
+		rc = -EINVAL;
+		break;
+	}
 
 	return rc;
 }
@@ -460,7 +464,6 @@ int cam_sensor_i2c_command_parser(
 		remain_len -= cmd_desc[i].offset;
 		if (remain_len < cmd_desc[i].length) {
 			CAM_ERR(CAM_SENSOR, "buffer provided too small");
-			cam_mem_put_cpu_buf(cmd_desc[i].mem_handle);
 			return -EINVAL;
 		}
 
@@ -608,7 +611,7 @@ int cam_sensor_i2c_command_parser(
 					goto end;
 				}
 				rc = cam_sensor_handle_slave_info(
-					cmd_buf, i2c_reg_settings, &list);
+					io_master, cmd_buf);
 				if (rc) {
 					CAM_ERR(CAM_SENSOR,
 					"Handle slave info failed with rc: %d",
@@ -712,12 +715,9 @@ int cam_sensor_i2c_command_parser(
 			}
 		}
 		i2c_reg_settings->is_settings_valid = 1;
-		cam_mem_put_cpu_buf(cmd_desc[i].mem_handle);
 	}
-	return rc;
 
 end:
-	cam_mem_put_cpu_buf(cmd_desc[i].mem_handle);
 	return rc;
 }
 
@@ -731,7 +731,7 @@ int cam_sensor_util_i2c_apply_setting(
 	switch (i2c_list->op_code) {
 	case CAM_SENSOR_I2C_WRITE_RANDOM: {
 		rc = camera_io_dev_write(io_master_info,
-			&(i2c_list->i2c_settings), false);
+			&(i2c_list->i2c_settings));
 		if (rc < 0) {
 			CAM_ERR(CAM_SENSOR,
 				"Failed to random write I2C settings: %d",
@@ -742,8 +742,7 @@ int cam_sensor_util_i2c_apply_setting(
 	}
 	case CAM_SENSOR_I2C_WRITE_SEQ: {
 		rc = camera_io_dev_write_continuous(
-			io_master_info, &(i2c_list->i2c_settings),
-			0, false);
+			io_master_info, &(i2c_list->i2c_settings), 0);
 		if (rc < 0) {
 			CAM_ERR(CAM_SENSOR,
 				"Failed to seq write I2C settings: %d",
@@ -754,8 +753,7 @@ int cam_sensor_util_i2c_apply_setting(
 	}
 	case CAM_SENSOR_I2C_WRITE_BURST: {
 		rc = camera_io_dev_write_continuous(
-			io_master_info, &(i2c_list->i2c_settings),
-			1, false);
+			io_master_info, &(i2c_list->i2c_settings), 1);
 		if (rc < 0) {
 			CAM_ERR(CAM_SENSOR,
 				"Failed to burst write I2C settings: %d",
@@ -805,12 +803,6 @@ int32_t cam_sensor_i2c_read_data(
 
 	list_for_each_entry(i2c_list,
 		&(i2c_settings->list_head), list) {
-		if (i2c_list->op_code == CAM_SENSOR_I2C_SET_I2C_INFO) {
-			CAM_DBG(CAM_SENSOR,
-				"CAM_SENSOR_I2C_SET_I2C_INFO continue");
-			continue;
-		}
-
 		read_buff = i2c_list->i2c_settings.read_buff;
 		buff_length = i2c_list->i2c_settings.read_buff_len;
 		if ((read_buff == NULL) || (buff_length == 0)) {
@@ -1155,29 +1147,22 @@ int32_t cam_sensor_update_power_settings(void *cmd_buf,
 	int32_t i = 0, pwr_up = 0, pwr_down = 0;
 	struct cam_sensor_power_setting *pwr_settings;
 	void *ptr = cmd_buf, *scr;
+	struct cam_cmd_power *pwr_cmd = (struct cam_cmd_power *)cmd_buf;
 	struct common_header *cmm_hdr = (struct common_header *)cmd_buf;
-	struct cam_cmd_power *pwr_cmd =
-		kzalloc(sizeof(struct cam_cmd_power), GFP_KERNEL);
-	if (!pwr_cmd)
-		return -ENOMEM;
-	memcpy(pwr_cmd, cmd_buf, sizeof(struct cam_cmd_power));
 
 	if (!pwr_cmd || !cmd_length || cmd_buf_len < (size_t)cmd_length ||
 		cam_sensor_validate(cmd_buf, cmd_buf_len)) {
 		CAM_ERR(CAM_SENSOR, "Invalid Args: pwr_cmd %pK, cmd_length: %d",
 			pwr_cmd, cmd_length);
-		rc = -EINVAL;
-		goto free_power_command;
+		return -EINVAL;
 	}
 
 	power_info->power_setting_size = 0;
 	power_info->power_setting =
 		kzalloc(sizeof(struct cam_sensor_power_setting) *
 			MAX_POWER_CONFIG, GFP_KERNEL);
-	if (!power_info->power_setting) {
-		rc = -ENOMEM;
-		goto free_power_command;
-	}
+	if (!power_info->power_setting)
+		return -ENOMEM;
 
 	power_info->power_down_setting_size = 0;
 	power_info->power_down_setting =
@@ -1187,8 +1172,7 @@ int32_t cam_sensor_update_power_settings(void *cmd_buf,
 		kfree(power_info->power_setting);
 		power_info->power_setting = NULL;
 		power_info->power_setting_size = 0;
-		rc = -ENOMEM;
-		goto free_power_command;
+		return -ENOMEM;
 	}
 
 	while (tot_size < cmd_length) {
@@ -1372,7 +1356,7 @@ int32_t cam_sensor_update_power_settings(void *cmd_buf,
 		}
 	}
 
-	goto free_power_command;
+	return rc;
 free_power_settings:
 	kfree(power_info->power_down_setting);
 	kfree(power_info->power_setting);
@@ -1380,9 +1364,6 @@ free_power_settings:
 	power_info->power_setting = NULL;
 	power_info->power_down_setting_size = 0;
 	power_info->power_setting_size = 0;
-free_power_command:
-	kfree(pwr_cmd);
-	pwr_cmd = NULL;
 	return rc;
 }
 
@@ -1771,7 +1752,7 @@ int msm_cam_sensor_handle_reg_gpio(int seq_type,
 	gpio_offset = seq_type;
 
 	if (gpio_num_info->valid[gpio_offset] == 1) {
-		CAM_DBG(CAM_SENSOR, "VALID GPIO offset: %d, seqtype: %d",
+		CAM_INFO(CAM_SENSOR, "VALID GPIO offset: %d, seqtype: %d",
 			 gpio_offset, seq_type);
 		cam_res_mgr_gpio_set_value(
 			gpio_num_info->gpio_num
